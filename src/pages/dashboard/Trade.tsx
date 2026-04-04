@@ -5,7 +5,7 @@ import type { IChartApi } from 'lightweight-charts'
 import { ArrowLeft, MoreHorizontal, ChevronDown, Settings, Maximize2, BarChart3, Search, Star, Info, List } from 'lucide-react'
 import Layout from '../../components/Layout/Layout'
 import SettingsSidebar from '../../components/ui/SettingsSidebar'
-import { openTrade, getMyOpenTrades, closeTrade, getMarketPrices } from '../../services/tradeService'
+import { openTrade, getMyOpenTrades, closeTrade, getMarketPrices, getDetailedMarketData } from '../../services/tradeService'
 import { getBalance, getCachedBalance, setCachedBalance, addSpotHolding, deductSpotHolding, getSpotHolding, syncSpotHoldingsFromBackend } from '../../services/walletService'
 import { useToast } from '../../context/ToastContext'
 import '../../styles/dashboard.css'
@@ -268,10 +268,14 @@ export default function Trade() {
     const [fundingRate, setFundingRate] = useState<number>(-0.0070)
 
     const activePriceData = marketCategory !== 'crypto' && activeYahooSymbol ? (nonCryptoPrices[activeYahooSymbol] || null) : null
-    const currentPrice = activePriceData ? activePriceData.price : (livePrices[toBinanceSymbol(selectedPair)] || 0)
+    const currentPrice = activePriceData
+        ? activePriceData.price
+        : (livePrices[toBinanceSymbol(selectedPair)] || marketData[selectedPair]?.price || 0)
     const selectedCoin = marketCategory === 'crypto' ? selectedPair.split('/')[0] : activeNonCryptoName
     const currentPriceRef = useRef(currentPrice)
+    const marketDataRef = useRef<Record<string, any>>(marketData)
     useEffect(() => { currentPriceRef.current = currentPrice }, [currentPrice])
+    useEffect(() => { marketDataRef.current = marketData }, [marketData])
 
     const handleNumericInput = (value: string, setter: (v: string) => void) => {
         const normalized = value.replace(',', '.')
@@ -312,14 +316,83 @@ export default function Trade() {
         return () => clearInterval(interval)
     }, [])
 
-    // Real-time market prices via Binance WebSocket
+    // Real-time market prices via Binance WebSocket, with backend polling fallback.
     useEffect(() => {
         let ws: WebSocket | null = null;
         let retryTimeout: any;
+        let fallbackPollInterval: any;
+        let isWsConnected = false;
+
+        const mergeMarketSnapshot = (snapshot: Record<string, any>) => {
+            setLivePrices(prev => {
+                const next = { ...prev };
+                let changed = false;
+
+                for (const pair of PAIR_SYMBOLS) {
+                    const data = snapshot[pair];
+                    const price = Number(data?.price);
+                    if (!(price > 0)) continue;
+
+                    const binanceKey = toBinanceSymbol(pair);
+                    if (next[binanceKey] !== price) {
+                        next[binanceKey] = price;
+                        changed = true;
+                    }
+                    if (next[pair] !== price) {
+                        next[pair] = price;
+                        changed = true;
+                    }
+                }
+
+                return changed ? next : prev;
+            });
+
+            setMarketData(prev => {
+                const next = { ...prev };
+                let changed = false;
+
+                for (const pair of PAIR_SYMBOLS) {
+                    const data = snapshot[pair];
+                    const price = Number(data?.price);
+                    if (!(price > 0)) continue;
+
+                    const existing = next[pair] || {};
+                    const merged = {
+                        ...existing,
+                        price,
+                        change24h: typeof data?.change24h === 'number' ? data.change24h : (existing.change24h || 0),
+                        volume24h: typeof data?.volume24h === 'number' ? data.volume24h : (existing.volume24h || 0),
+                        marketCap: typeof data?.marketCap === 'number' ? data.marketCap : (existing.marketCap || 0),
+                    };
+
+                    if (
+                        existing.price !== merged.price ||
+                        existing.change24h !== merged.change24h ||
+                        existing.volume24h !== merged.volume24h ||
+                        existing.marketCap !== merged.marketCap
+                    ) {
+                        next[pair] = merged;
+                        changed = true;
+                    }
+                }
+
+                return changed ? next : prev;
+            });
+        };
+
+        const fetchFallbackMarketData = async () => {
+            try {
+                const snapshot = await getDetailedMarketData(PAIR_SYMBOLS);
+                mergeMarketSnapshot(snapshot);
+            } catch {
+                // Keep current UI values on transient network failures.
+            }
+        };
 
         const connectWS = () => {
             try {
                 ws = new WebSocket('wss://stream.binance.com:9443/ws/!ticker@arr');
+                ws.onopen = () => { isWsConnected = true; };
                 ws.onmessage = (event) => {
                     try {
                         const data = JSON.parse(event.data);
@@ -339,9 +412,12 @@ export default function Trade() {
                                     newMarketData[cleanPair] = {
                                         price: val,
                                         change24h: parseFloat(ticker.P),
+                                        high24h: parseFloat(ticker.h),
+                                        low24h: parseFloat(ticker.l),
                                         high: parseFloat(ticker.h),
                                         low: parseFloat(ticker.l),
-                                        volume24h: parseFloat(ticker.q)
+                                        volume24h: parseFloat(ticker.v),
+                                        quoteVolume24h: parseFloat(ticker.q)
                                     };
                                 }
                             });
@@ -353,16 +429,23 @@ export default function Trade() {
                         }
                     } catch (e) { /* ignore */ }
                 };
-                ws.onerror = () => { if (ws) ws.close(); };
-                ws.onclose = () => { retryTimeout = setTimeout(connectWS, 5000); };
+                ws.onerror = () => { isWsConnected = false; if (ws) ws.close(); };
+                ws.onclose = () => { isWsConnected = false; retryTimeout = setTimeout(connectWS, 5000); };
             } catch (err) {
+                isWsConnected = false;
                 retryTimeout = setTimeout(connectWS, 5000);
             }
         };
 
+        fetchFallbackMarketData();
+        fallbackPollInterval = setInterval(() => {
+            if (!isWsConnected) fetchFallbackMarketData();
+        }, 12000);
+
         connectWS();
         return () => {
             clearTimeout(retryTimeout);
+            clearInterval(fallbackPollInterval);
             if (ws) {
                 ws.onclose = null;
                 ws.onerror = null;
@@ -391,9 +474,15 @@ export default function Trade() {
         if (marketCategory !== 'crypto') return
         const symbol = toBinanceSymbol(selectedPair)
         const applyFallback = (price: number) => {
-            const vol = price > 0 ? +(Math.random() * 30000 + 8000).toFixed(0) : 0
-            setTicker24h({ high: price * 1.018, low: price * 0.983, volume: vol, quoteVolume: vol * price, change: +(( Math.random() - 0.46) * 6).toFixed(2) })
-            setFundingRate(+(Math.random() * 0.08 - 0.04).toFixed(4))
+            const selectedData = marketDataRef.current[selectedPair] || {}
+            const volume = typeof selectedData.volume24h === 'number' ? selectedData.volume24h : 0
+            const quoteVolume = typeof selectedData.quoteVolume24h === 'number' ? selectedData.quoteVolume24h : volume * price
+            const change = typeof selectedData.change24h === 'number' ? selectedData.change24h : 0
+            const high = (typeof selectedData.high24h === 'number' ? selectedData.high24h : selectedData.high) || (price > 0 ? price * 1.018 : 0)
+            const low = (typeof selectedData.low24h === 'number' ? selectedData.low24h : selectedData.low) || (price > 0 ? price * 0.983 : 0)
+
+            setTicker24h({ high, low, volume, quoteVolume, change })
+            setFundingRate(0)
         }
         fetch(`https://api.binance.com/api/v3/ticker/24hr?symbol=${symbol}`)
             .then(r => r.json())
@@ -506,13 +595,14 @@ export default function Trade() {
 
     const tradingPairs = PAIR_SYMBOLS.map(pair => {
         const coin = pair.split('/')[0]
-        const price = livePrices[toBinanceSymbol(pair)] || 0
+        const wsPrice = livePrices[toBinanceSymbol(pair)] || 0
         const data = marketData[pair] || {}
+        const price = wsPrice > 0 ? wsPrice : (data.price || 0)
         const change = data.change24h || 0
         return {
             symbol: coin, name: COIN_NAMES[coin] || coin, pair: 'USDT', fullPair: pair, price,
             priceStr: price ? `$${price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : 'Loading',
-            change: `${change >= 0 ? '+' : ''}${change !== 0 ? change.toFixed(2) : (Math.random() * 4 - 1.5).toFixed(2)}%`,
+            change: `${change >= 0 ? '+' : ''}${change.toFixed(2)}%`,
             positive: change >= 0,
         }
     })
@@ -859,10 +949,16 @@ export default function Trade() {
     const pairChangeData = marketData[selectedPair] || {}
     const _p = currentPrice || currentPriceRef.current || 0
     const change24h = activePriceData ? activePriceData.change : (ticker24h ? ticker24h.change : (pairChangeData.change24h || 0))
-    const volume24h = activePriceData ? activePriceData.volume : (ticker24h ? ticker24h.volume : (pairChangeData.volume || (_p > 0 ? +(_p * 0.18 + Math.random() * _p * 0.05).toFixed(0) : 0)))
-    const high24h = activePriceData ? activePriceData.high : (ticker24h ? ticker24h.high : (pairChangeData.high24h || ohlcData.high || (_p > 0 ? +(_p * 1.018).toFixed(2) : 0)))
-    const low24h = activePriceData ? activePriceData.low : (ticker24h ? ticker24h.low : (pairChangeData.low24h || ohlcData.low || (_p > 0 ? +(_p * 0.983).toFixed(2) : 0)))
-    const quoteVol24h = ticker24h ? ticker24h.quoteVolume : (volume24h * _p)
+    const volume24h = activePriceData
+        ? activePriceData.volume
+        : (ticker24h ? ticker24h.volume : (pairChangeData.volume24h || pairChangeData.volume || (_p > 0 ? +(_p * 0.18 + Math.random() * _p * 0.05).toFixed(0) : 0)))
+    const high24h = activePriceData
+        ? activePriceData.high
+        : (ticker24h ? ticker24h.high : (pairChangeData.high24h || pairChangeData.high || ohlcData.high || (_p > 0 ? +(_p * 1.018).toFixed(2) : 0)))
+    const low24h = activePriceData
+        ? activePriceData.low
+        : (ticker24h ? ticker24h.low : (pairChangeData.low24h || pairChangeData.low || ohlcData.low || (_p > 0 ? +(_p * 0.983).toFixed(2) : 0)))
+    const quoteVol24h = ticker24h ? ticker24h.quoteVolume : (pairChangeData.quoteVolume24h || (volume24h * _p))
     const timeframes = ['1s', '15m', '1H', '4H', '1D', '1W']
 
     return (
@@ -880,7 +976,8 @@ export default function Trade() {
                         </div>
                         <div className="tm-overlay-list-v3">
                             {filteredPairs.map(pair => {
-                                const coin = pair.split('/')[0], price = livePrices[toBinanceSymbol(pair)] || 0, md = marketData[pair] || {}
+                                const coin = pair.split('/')[0], md = marketData[pair] || {}
+                                const price = livePrices[toBinanceSymbol(pair)] || md.price || 0
                                 return (
                                     <div key={pair} className="tm-overlay-item-v3" onClick={() => handleSelectPair(pair)}
                                         style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer' }}>
