@@ -239,36 +239,27 @@ function SignUp({ onSwitchToSignIn }: SignUpProps) {
       if (detected) setSelectedCountry(detected)
     }
 
-    // Try ipwho.is first (no rate limit on free tier)
-    fetch('https://ipwho.is/')
+    fetch('https://api.country.is/')
       .then(res => res.json())
       .then(data => {
-        if (data.success && data.country_code) {
-          applyCountry(data.country_code)
+        if (data.country) {
+          applyCountry(data.country)
         } else {
-          throw new Error('ipwho.is failed')
+          throw new Error('api.country.is failed')
         }
       })
       .catch(() =>
-        // Fallback: api.country.is
-        fetch('https://api.country.is/')
+        // Fallback: freeipapi.com
+        fetch('https://freeipapi.com/api/json')
           .then(res => res.json())
           .then(data => {
-            if (data.country) {
-              applyCountry(data.country)
+            if (data.countryCode) {
+              applyCountry(data.countryCode)
             } else {
-              throw new Error('api.country.is failed')
+              throw new Error('freeipapi failed')
             }
           })
-          .catch(() =>
-            // Fallback: freeipapi.com
-            fetch('https://freeipapi.com/api/json')
-              .then(res => res.json())
-              .then(data => {
-                if (data.countryCode) applyCountry(data.countryCode)
-              })
-              .catch(() => { /* all failed, keep US default */ })
-          )
+          .catch(() => { /* all failed, keep US default */ })
       )
   }, [])
 
@@ -357,6 +348,7 @@ function SignUp({ onSwitchToSignIn }: SignUpProps) {
               <label className="form-label">Full name</label>
               <input
                 type="text"
+                autoComplete="name"
                 placeholder="E.g John Doe"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
@@ -369,6 +361,7 @@ function SignUp({ onSwitchToSignIn }: SignUpProps) {
               <label className="form-label">Email address</label>
               <input
                 type="email"
+                autoComplete="email"
                 placeholder="E.g John@gmail.com"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
@@ -428,6 +421,7 @@ function SignUp({ onSwitchToSignIn }: SignUpProps) {
                 {/* Phone number input */}
                 <input
                   type="tel"
+                  autoComplete="tel"
                   placeholder="Enter phone number"
                   value={phoneNumber}
                   onChange={(e) => setPhoneNumber(e.target.value.replace(/\D/g, ''))}
@@ -442,6 +436,7 @@ function SignUp({ onSwitchToSignIn }: SignUpProps) {
               <div className="password-wrapper">
                 <input
                   type={showPassword ? 'text' : 'password'}
+                  autoComplete="new-password"
                   placeholder="Enter your password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
@@ -473,7 +468,7 @@ function SignUp({ onSwitchToSignIn }: SignUpProps) {
           {/* Sign In Link */}
           <p className="signup-link">
             Already have an account?
-            <button className="signup-btn" onClick={onSwitchToSignIn}>Sign in</button>
+            <button type="button" className="signup-btn" onClick={onSwitchToSignIn}>Sign in</button>
           </p>
         </div>
       </div>

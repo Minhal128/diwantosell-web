@@ -90,25 +90,20 @@ function App() {
       const detected = COUNTRIES.find(c => c.iso === isoCode.toUpperCase())
       if (detected) setSigninSelectedCountry(detected)
     }
-    fetch('https://ipwho.is/')
+    fetch('https://api.country.is/')
       .then(res => res.json())
       .then(data => {
-        if (data.success && data.country_code) { applyCountry(data.country_code) }
-        else throw new Error('ipwho.is failed')
+        if (data.country) applyCountry(data.country)
+        else throw new Error('country.is failed')
       })
       .catch(() =>
-        fetch('https://api.country.is/')
+        fetch('https://freeipapi.com/api/json')
           .then(res => res.json())
           .then(data => {
-            if (data.country) applyCountry(data.country)
-            else throw new Error('country.is failed')
+            if (data.countryCode) applyCountry(data.countryCode)
+            else throw new Error('freeipapi failed')
           })
-          .catch(() =>
-            fetch('https://freeipapi.com/api/json')
-              .then(res => res.json())
-              .then(data => { if (data.countryCode) applyCountry(data.countryCode) })
-              .catch(() => { /* all failed, keep US default */ })
-          )
+          .catch(() => { /* all failed, keep US default */ })
       )
   }, [])
 
@@ -160,6 +155,11 @@ function App() {
     } finally {
       setLoading(false)
     }
+  }
+
+  const handleSignInSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    await handleSignIn()
   }
 
   // Navigation handlers
@@ -220,14 +220,18 @@ function App() {
                 <p className="login-subtitle">Enter your personal data to create your account</p>
               </div>
 
+              <form onSubmit={handleSignInSubmit}>
+
               <div className="tabs">
                 <button
+                  type="button"
                   onClick={() => setActiveTab('email')}
                   className={`tab-btn ${activeTab === 'email' ? 'active' : 'inactive'}`}
                 >
                   Email address
                 </button>
                 <button
+                  type="button"
                   onClick={() => setActiveTab('phone')}
                   className={`tab-btn ${activeTab === 'phone' ? 'active' : 'inactive'}`}
                 >
@@ -242,6 +246,7 @@ function App() {
                 {activeTab === 'email' ? (
                   <input
                     type="email"
+                    autoComplete="email"
                     placeholder="E.g John@gmail.com"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
@@ -297,6 +302,7 @@ function App() {
                     {/* Phone number input */}
                     <input
                       type="tel"
+                      autoComplete="tel"
                       placeholder="Enter phone number"
                       value={phone}
                       onChange={e => setPhone(e.target.value.replace(/\D/g, ''))}
@@ -311,6 +317,7 @@ function App() {
                 <div className="password-wrapper">
                   <input
                     type={showPassword ? 'text' : 'password'}
+                    autoComplete="current-password"
                     placeholder="Enter your password"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
@@ -327,22 +334,24 @@ function App() {
               </div>
 
               <div className="forgot-password">
-                <button className="forgot-btn" onClick={goToForgotPassword}>Forgot password?</button>
+                <button type="button" className="forgot-btn" onClick={goToForgotPassword}>Forgot password?</button>
               </div>
 
               {error && <div className="login-error-message" style={{ color: '#ef4444', fontSize: '14px', marginBottom: '16px', textAlign: 'center' }}>{error}</div>}
 
               <button
+                type="submit"
                 className="signin-btn"
-                onClick={handleSignIn}
                 disabled={loading}
               >
                 {loading ? 'Signing in...' : 'Sign in'}
               </button>
 
+              </form>
+
               <p className="signup-link">
                 Don't have an account?
-                <button className="signup-btn" onClick={goToSignUp}>Sign up</button>
+                <button type="button" className="signup-btn" onClick={goToSignUp}>Sign up</button>
               </p>
             </div>
           </div>

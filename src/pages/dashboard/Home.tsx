@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom'
 import { Search, Menu, TrendingUp, Repeat, Wallet, Target, Grid3X3, GraduationCap, Megaphone, ChevronDown, X, ShieldCheck } from 'lucide-react'
 import Layout from '../../components/Layout/Layout'
 import { useAuth } from '../../context/AuthContext'
+import { getDetailedMarketData } from '../../services/tradeService'
 import '../../styles/dashboard.css'
 import '../../styles/landing.css'
 
@@ -30,6 +31,8 @@ const homeCoinLogos: Record<string, string> = {
     ADA: 'https://assets.coingecko.com/coins/images/975/small/cardano.png',
 }
 
+const homeSymbols = ['BTC/USDT', 'ETH/USDT', 'XRP/USDT', 'SOL/USDT', 'AVAX/USDT', 'DOGE/USDT', 'BNB/USDT', 'ADA/USDT']
+
 export default function Home() {
     const navigate = useNavigate()
     const { isLoggedIn, user } = useAuth()
@@ -48,10 +51,64 @@ export default function Home() {
     useEffect(() => {
         let ws: WebSocket | null = null;
         let retryTimeout: any;
+        let fallbackPollInterval: any;
+        let isWsConnected = false;
+
+        const formatVol = (n: number) => {
+            if (!n) return '—';
+            if (n > 1e9) return `$${(n / 1e9).toFixed(2)}B`;
+            if (n > 1e6) return `$${(n / 1e6).toFixed(2)}M`;
+            return `$${n.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
+        };
+
+        const applyMarketSnapshot = (snapshot: Record<string, any>) => {
+            setMobileCryptoData(prev => {
+                let hasChanges = false;
+                const next = prev.map(item => {
+                    const key = `${item.symbol}/USDT`;
+                    const data = snapshot[key];
+                    if (!data || typeof data.price !== 'number' || data.price <= 0) return item;
+
+                    const p = data.price;
+                    const changePct = typeof data.change24h === 'number' ? data.change24h : 0;
+                    const vol = typeof data.volume24h === 'number' ? data.volume24h : 0;
+
+                    const updated = {
+                        ...item,
+                        price: `$${p.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+                        change: `${changePct >= 0 ? '+' : ''}${changePct.toFixed(2)}%`,
+                        positive: changePct >= 0,
+                        volume: formatVol(vol),
+                    };
+
+                    if (
+                        updated.price !== item.price ||
+                        updated.change !== item.change ||
+                        updated.volume !== item.volume ||
+                        updated.positive !== item.positive
+                    ) {
+                        hasChanges = true;
+                    }
+
+                    return updated;
+                });
+                return hasChanges ? next : prev;
+            });
+        };
+
+        const fetchFallbackPrices = async () => {
+            try {
+                const snapshot = await getDetailedMarketData(homeSymbols);
+                applyMarketSnapshot(snapshot);
+            } catch {
+                // Ignore fallback errors and keep current UI values.
+            }
+        };
 
         const connectWS = () => {
             try {
                 ws = new WebSocket('wss://stream.binance.com:9443/ws/!ticker@arr');
+                ws.onopen = () => { isWsConnected = true; };
                 ws.onmessage = (event) => {
                     try {
                         const data = JSON.parse(event.data);
@@ -66,13 +123,6 @@ export default function Home() {
                                         const p = parseFloat(ticker.c);
                                         const changePct = parseFloat(ticker.P);
                                         const vol = parseFloat(ticker.q);
-                                        
-                                        const formatVol = (n: number) => {
-                                            if (!n) return '—';
-                                            if (n > 1e9) return `$${(n / 1e9).toFixed(2)}B`;
-                                            if (n > 1e6) return `$${(n / 1e6).toFixed(2)}M`;
-                                            return `$${n.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
-                                        };
 
                                         return {
                                             ...item,
@@ -89,16 +139,23 @@ export default function Home() {
                         }
                     } catch (e) { /* ignore */ }
                 };
-                ws.onerror = () => { if (ws) ws.close(); };
-                ws.onclose = () => { retryTimeout = setTimeout(connectWS, 5000); };
+                ws.onerror = () => { isWsConnected = false; if (ws) ws.close(); };
+                ws.onclose = () => { isWsConnected = false; retryTimeout = setTimeout(connectWS, 5000); };
             } catch (err) {
+                isWsConnected = false;
                 retryTimeout = setTimeout(connectWS, 5000);
             }
         };
 
+        fetchFallbackPrices();
+        fallbackPollInterval = setInterval(() => {
+            if (!isWsConnected) fetchFallbackPrices();
+        }, 12000);
+
         connectWS();
         return () => {
             clearTimeout(retryTimeout);
+            clearInterval(fallbackPollInterval);
             if (ws) {
                 ws.onclose = null;
                 ws.onerror = null;

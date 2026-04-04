@@ -15,6 +15,7 @@ import {
   MoreVertical,
 } from 'lucide-react'
 import Layout from '../../components/Layout/Layout'
+import { getDetailedMarketData } from '../../services/tradeService'
 
 import '../../styles/dashboard.css'
 import '../../styles/market.css'
@@ -74,18 +75,56 @@ function Market() {
 
   const allSymbols = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT', 'DOGE/USDT', 'ADA/USDT', 'AVAX/USDT', 'DOT/USDT', 'LINK/USDT', 'LTC/USDT', 'NEAR/USDT', 'APT/USDT', 'ATOM/USDT', 'UNI/USDT', 'OP/USDT', 'ARB/USDT', 'MATIC/USDT']
 
-  useEffect(() => {
-// no initial fetch
-
-    }, [])
-
     useEffect(() => {
         let ws: WebSocket | null = null;
         let retryTimeout: any;
+      let fallbackPollInterval: any;
+      let isWsConnected = false;
+
+      const mergeMarketSnapshot = (snapshot: Record<string, any>) => {
+        setMarketData(prev => {
+          const next = { ...prev };
+          let changed = false;
+
+          allSymbols.forEach((symbol) => {
+            const data = snapshot[symbol];
+            if (!data || typeof data.price !== 'number' || data.price <= 0) return;
+
+            const existing = next[symbol] || {};
+            const merged = {
+              ...existing,
+              price: data.price,
+              change24h: typeof data.change24h === 'number' ? data.change24h : (existing.change24h || 0),
+              volume24h: typeof data.volume24h === 'number' ? data.volume24h : (existing.volume24h || 0),
+            };
+
+            if (
+              existing.price !== merged.price ||
+              existing.change24h !== merged.change24h ||
+              existing.volume24h !== merged.volume24h
+            ) {
+              next[symbol] = merged;
+              changed = true;
+            }
+          });
+
+          return changed ? next : prev;
+        });
+      };
+
+      const fetchFallbackMarketData = async () => {
+        try {
+          const snapshot = await getDetailedMarketData(allSymbols);
+          mergeMarketSnapshot(snapshot);
+        } catch {
+          // Keep existing values on transient network failures.
+        }
+      };
 
         const connectWS = () => {
             try {
                 ws = new WebSocket('wss://stream.binance.com:9443/ws/!ticker@arr');
+          ws.onopen = () => { isWsConnected = true; };
                 ws.onmessage = (event) => {
                     try {
                         const data = JSON.parse(event.data);
@@ -117,16 +156,23 @@ function Market() {
                         }
                     } catch (e) { /* ignore */ }
                 };
-                ws.onerror = () => { if (ws) ws.close(); };
-                ws.onclose = () => { retryTimeout = setTimeout(connectWS, 5000); };
+                        ws.onerror = () => { isWsConnected = false; if (ws) ws.close(); };
+                        ws.onclose = () => { isWsConnected = false; retryTimeout = setTimeout(connectWS, 5000); };
             } catch (err) {
+                        isWsConnected = false;
                 retryTimeout = setTimeout(connectWS, 5000);
             }
         };
 
+                    fetchFallbackMarketData();
+                    fallbackPollInterval = setInterval(() => {
+                      if (!isWsConnected) fetchFallbackMarketData();
+                    }, 12000);
+
         connectWS();
         return () => {
             clearTimeout(retryTimeout);
+                      clearInterval(fallbackPollInterval);
             if (ws) {
                 ws.onclose = null;
                 ws.onerror = null;
